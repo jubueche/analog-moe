@@ -390,6 +390,139 @@ def cvmm_backward_kernel3(
             tl.atomic_add(c_ptrs, c, mask=c_mask)
 
 
+def cvmm_std(
+    x: torch.Tensor,
+    sel_index: torch.Tensor,
+    sel: torch.Tensor,
+    n_experts: int,
+):
+    """
+    Calculates the per-expert std of the input tokens.
+
+    Args:
+        x (torch.Tensor): _description_
+        sel_index (torch.Tensor): _description_
+        sel (torch.Tensor): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    # collapses all of the dimensions except the last one
+    x = x.flatten(end_dim=-2)
+    x_sum = x.sum(dim=-1) / x.size(-1) # collapse it to number of tokens
+    sel = sel.flatten() # len(sel) = bsz * seq_len * top-k
+    per_expert_sum = torch.zeros((n_experts, ), device=x.device, dtype=x.dtype)
+    per_expert_count1 = torch.zeros((n_experts, ), device=x.device, dtype=x.dtype)
+    center_and_square = torch.zeros((n_experts, ), device=x.device, dtype=x.dtype)
+    per_expert_count2 = torch.zeros((n_experts, ), device=x.device, dtype=x.dtype)
+
+    M = sel.size(0)
+    N = x.size(-1)
+    # 1D launch kernel where each block gets its own program.
+    grid = lambda META: (
+        triton.cdiv(M, META['BLOCK_SIZE_M']),
+    )
+    cvmm_mean_kernel[grid](
+        x_sum, per_expert_sum, per_expert_count1, sel_index, sel, M,
+    )
+    per_expert_mean = per_expert_sum / per_expert_count1
+
+    grid = lambda META: (
+        triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
+    )
+    cvmm_center_and_square_kernel[grid](
+        x, center_and_square, per_expert_count2, per_expert_mean, x.stride(0), x.stride(1), sel_index, sel, M, N
+    )
+    # ground = torch.tensor([x[sel_index[sel == i]].std() for i in range(n_experts)])
+    # ground_means = torch.tensor([x[sel_index[sel == i]].mean() for i in range(n_experts)])
+    # ground_sum_center_and_square = torch.tensor([((x[sel_index[sel == i]] - ground_means[i])**2).sum() for i in range(n_experts)])
+    # (ground_sum_center_and_square.cuda() / (128*per_expert_count1-1))**.5
+    return torch.sqrt(center_and_square / (per_expert_count2-1)) #NOTE still something wrong here
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32}, num_stages=4, num_warps=4),
+    ],
+    key=['M','N'], reset_to_zero=['out_ptr', 'count_ptr']
+)
+@triton.jit
+def cvmm_center_and_square_kernel(
+    x_ptr, out_ptr, count_ptr, per_expert_mean_ptr,
+    stride_xm, stride_xn,
+    sel_index_ptr, sel_ptr, M, N,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr
+):
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    pid_m = pid % num_pid_m
+
+    sel_first = tl.load(sel_ptr + pid_m * BLOCK_SIZE_M)
+    sel_last = tl.load(sel_ptr + (min((pid_m + 1) * BLOCK_SIZE_M, M) - 1))
+    sel_all = tl.load(sel_ptr + ((pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M))
+
+    for matrix_id in range(sel_first, sel_last + 1):
+        mean = tl.load(per_expert_mean_ptr + matrix_id)
+        offs_xm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+        remap_offs_xm = tl.load(sel_index_ptr + offs_xm)
+        belonging_to_this_matrix = sel_all == matrix_id
+        offs_n = tl.arange(0, BLOCK_SIZE_N)
+        x_ptrs = x_ptr + (remap_offs_xm[:, None] * stride_xm + offs_n[None, :] * stride_xn)
+
+        # the computation of this block happens here
+        for n in range(0, tl.cdiv(N, BLOCK_SIZE_N)):
+            n_mask = offs_n[None, :] < N - n * BLOCK_SIZE_N
+            x = tl.load(x_ptrs, mask=n_mask, other=0.0)
+            x_minus_mean = (x - mean)
+            x_minus_mean_sq = x_minus_mean * x_minus_mean
+            mask = belonging_to_this_matrix[:, None] & n_mask
+            x_minus_mean_sq = tl.where(mask, x_minus_mean_sq, 0.0)
+            x_ptrs += BLOCK_SIZE_N * stride_xn
+            tl.atomic_add(out_ptr + matrix_id, tl.sum(x_minus_mean_sq))
+            tl.atomic_add(count_ptr + matrix_id, tl.sum(tl.where(mask, 1., 0.)))
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE_M': 64}, num_stages=4, num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 32}, num_stages=4, num_warps=4),
+    ],
+    key=['M'], reset_to_zero=['per_expert_sum_ptr', 'per_expert_count_ptr']
+)
+@triton.jit
+def cvmm_mean_kernel(
+    x_sum_ptr, per_expert_sum_ptr, per_expert_count_ptr,
+    sel_index_ptr, sel_ptr, M,
+    BLOCK_SIZE_M: tl.constexpr
+):
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    pid_m = pid % num_pid_m
+
+    sel_first = tl.load(sel_ptr + pid_m * BLOCK_SIZE_M)
+    sel_last = tl.load(sel_ptr + (min((pid_m + 1) * BLOCK_SIZE_M, M) - 1))
+    sel_all = tl.load(sel_ptr + ((pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M))
+
+    for matrix_id in range(sel_first, sel_last + 1):
+        offs_xm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))
+        remap_offs_xm = tl.load(sel_index_ptr + (offs_xm % M))
+        belonging_to_this_matrix = (sel_all == matrix_id) & (offs_xm < M)
+        tl.atomic_add(
+            per_expert_sum_ptr + matrix_id,
+            tl.sum(tl.load(x_sum_ptr + remap_offs_xm, mask=belonging_to_this_matrix, other=0.0))
+        )
+        count = tl.where(belonging_to_this_matrix, 1., 0.)
+        sum_count = tl.sum(count)
+        tl.atomic_add(
+            per_expert_count_ptr + matrix_id,
+            sum_count
+        )
+
+
 torch.library.define("mylib::cvmm_triton_quantized", "(Tensor x, Tensor sel_index, Tensor sel, Tensor keys, Tensor input_ranges, float inp_res, ScalarType out_dtype, Tensor out_index, Tensor abs_max, Tensor out_noise) -> Tensor")
 @torch.library.impl("mylib::cvmm_triton_quantized", "default")
 def cvmm_triton_quantized(

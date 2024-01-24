@@ -175,6 +175,72 @@ def test_out_noise(weight_remap_columnwise: bool = False):
     assert torch.allclose(diff.std(-1).mean(), fast_diff.std(-1).mean(), atol=1e-2)
 
 
+def test_ema_input_range_adaptation():
+    """
+    Test the exponential moving average adaptation
+    of the input ranges in the MoE layer.
+    """
+    # the rpu config we will test for
+    rpu_config = TorchInferenceRPUConfig()
+    rpu_config.forward.bound_management = BoundManagementType.NONE
+    rpu_config.forward.noise_management = NoiseManagementType.NONE
+    rpu_config.forward.inp_res = -1
+    rpu_config.forward.out_res = -1
+    rpu_config.forward.out_bound = -1
+    rpu_config.forward.inp_bound = 1.0
+    rpu_config.forward.out_noise = 0.0
+    rpu_config.forward.is_perfect = True
+    rpu_config.pre_post.input_range.enable = True
+    rpu_config.pre_post.input_range.decay = 0.0
+    rpu_config.pre_post.input_range.init_from_data = 200
+    rpu_config.pre_post.input_range.init_value = 3.0
+    rpu_config.pre_post.input_range.init_std_alpha = 3.0
+    rpu_config.mapping.max_input_size = 0
+    rpu_config.mapping.max_output_size = 0
+
+    torch.manual_seed(0)
+    d_model = 128
+    n_experts = 4
+    expert_size = 64
+    seq_len = 10
+    bsz = 10
+    k = 2
+    hf_moe = HFSigmaMoELayer(
+        d_model=d_model,
+        n_experts=n_experts,
+        expert_size=expert_size,
+        k=k,
+    ).cuda()
+    moe = SigmaMoELayer(
+        d_model=d_model,
+        n_experts=n_experts,
+        expert_size=expert_size,
+        k=k,
+    ).cuda()
+    moe.set_from_hf(hf_moe)
+    inp = torch.randn(bsz, seq_len, d_model).cuda()
+    analog_moe = convert_to_analog(moe, rpu_config=rpu_config)
+    fast_analog_moe = convert_to_analog(
+        hf_moe,
+        rpu_config=rpu_config,
+        conversion_map={
+            torch.nn.Linear: AnalogLinear,
+            HFSigmaMoELayer: AnalogSigmaMoELayer,
+        },
+    )
+    analog_x, _ = analog_moe(inp)
+    fast_analog_x, _ = fast_analog_moe(inp)
+    keys_irs = torch.tensor(
+        [
+            analog_moe.keys[i].analog_module.input_range
+            for i in range(n_experts)
+        ]
+    ).cuda()
+    # assert torch.allclose(
+    #     fast_analog_moe.input_range[0], keys_irs, atol=1e-4
+    # )
+
+
 def test_analog_vs_normal_IR_gradient(use_abs_max: bool = False):
     """
     Test input output correctness of MoE layer under input ranges.
@@ -489,8 +555,9 @@ def test_to_cuda():
 
 
 if __name__ == "__main__":
-    test_analog_vs_normal_IR_gradient(use_abs_max=True)
-    test_out_noise(weight_remap_columnwise=False)
-    test_analog_optim(do_clip=True)
-    test_load_and_state_dict()
-    test_to_cuda()
+    test_ema_input_range_adaptation()
+    # test_analog_vs_normal_IR_gradient(use_abs_max=False)
+    # test_out_noise(weight_remap_columnwise=False)
+    # test_analog_optim(do_clip=True)
+    # test_load_and_state_dict()
+    # test_to_cuda()
