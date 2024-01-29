@@ -433,19 +433,15 @@ def cvmm_std(
     cvmm_center_and_square_kernel[grid](
         x, center_and_square, per_expert_count2, per_expert_mean, x.stride(0), x.stride(1), sel_index, sel, M, N
     )
-    # ground = torch.tensor([x[sel_index[sel == i]].std() for i in range(n_experts)])
-    # ground_means = torch.tensor([x[sel_index[sel == i]].mean() for i in range(n_experts)])
-    # ground_sum_center_and_square = torch.tensor([((x[sel_index[sel == i]] - ground_means[i])**2).sum() for i in range(n_experts)])
-    # (ground_sum_center_and_square.cuda() / (128*per_expert_count1-1))**.5
-    return torch.sqrt(center_and_square / (per_expert_count2-1)) #NOTE still something wrong here
+    return torch.sqrt(center_and_square / (per_expert_count2-1))
 
 
 @triton.autotune(
     configs=[
         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64}, num_stages=4, num_warps=4),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32}, num_stages=4, num_warps=4),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64}, num_stages=4, num_warps=4),
-        # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32}, num_stages=4, num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32}, num_stages=4, num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64}, num_stages=4, num_warps=4),
+        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32}, num_stages=4, num_warps=4),
     ],
     key=['M','N'], reset_to_zero=['out_ptr', 'count_ptr']
 )

@@ -20,8 +20,7 @@ from aihwkit.simulator.parameters import (
     WeightClipParameter,
 )
 
-from .triton_src.cvmm import CVMM, CVMMSel
-
+from .triton_src.cvmm import CVMM, CVMMSel, cvmm_std
 
 class MoEConifgError(Exception):
     """Exceptions related to MoE configuration."""
@@ -68,7 +67,7 @@ class AnalogSigmaMoELayer(AnalogLayerBase, SigmaMoELayer):
         self.input_range = None
         ir_params = self.rpu_config.pre_post.input_range
         if ir_params.enable:
-            self.input_range_update_idx = 0
+            self.input_range_update_idx = torch.nn.Parameter(torch.tensor(0., requires_grad=False))
             if ir_params.learn_input_range:
                 self.input_range = torch.nn.Parameter(
                     torch.full(
@@ -138,6 +137,7 @@ class AnalogSigmaMoELayer(AnalogLayerBase, SigmaMoELayer):
         self.keys = keys
         self.values = values
         self.analog_ctx = AnalogContext(self)
+        self.analog_ctx.use_torch_update = True
         self.bias = bias
         self.o_bias = o_bias
 
@@ -219,24 +219,17 @@ class AnalogSigmaMoELayer(AnalogLayerBase, SigmaMoELayer):
                 ir_params = self.rpu_config.pre_post.input_range
                 idx = self.input_range_update_idx
                 if idx < ir_params.init_from_data:
-                    # from analog_moe.triton_src.cvmm import cvmm_std
-                    # stds_ = cvmm_std(
-                    #     inputs,
-                    #     sel_indices.sel_index,
-                    #     sel_indices.sel,
-                    #     self.n_experts
-                    # )
-                    stds = torch.tensor(
-                        [
-                            inputs.flatten(end_dim=-2)[sel_indices.sel_index[sel_indices.sel.flatten() == i]].std() for i in range(self.n_experts)
-                        ],
-                        device=inputs.device
+                    stds = cvmm_std(
+                        inputs,
+                        sel_indices.sel_index,
+                        sel_indices.sel,
+                        self.n_experts
                     )
                     if (stds > 0.0).any():
                         self.input_range.data[ir_idx] = (
                             self.input_range.data[ir_idx][stds > 0] * idx + ir_params.init_std_alpha * stds[stds > 0]
                         ) / (idx + 1)
-                        self.input_range_update_idx += 1
+                        self.input_range_update_idx.data += 1
                     self.input_range.data = self.input_range.data.abs()
             
             input_ranges = self.input_range[ir_idx]
