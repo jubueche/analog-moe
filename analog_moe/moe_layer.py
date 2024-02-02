@@ -3,7 +3,7 @@ from collections import OrderedDict
 import torch
 from torch import Tensor, dtype
 from torch import device as torch_device
-from transformers.models.sigma_moe.moe_layer import SigmaMoELayer
+from sigma_moe.moe_layer import SigmaMoELayer
 
 from aihwkit.nn.modules.base import AnalogLayerBase
 from aihwkit.simulator.configs.configs import TorchInferenceRPUConfig

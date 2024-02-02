@@ -13,7 +13,7 @@ from aihwkit.simulator.configs import (
 )
 from aihwkit.optim import AnalogSGD
 from aihwkit.nn.conversion import convert_to_analog
-from transformers.models.sigma_moe.moe_layer import SigmaMoELayer as HFSigmaMoELayer
+from sigma_moe.moe_layer import SigmaMoELayer as HFSigmaMoELayer
 
 from analog_moe import AnalogSigmaMoELayer
 
