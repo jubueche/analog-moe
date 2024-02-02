@@ -10,21 +10,22 @@ from aihwkit.nn.modules.linear import AnalogLinear
 from aihwkit.nn.conversion import convert_to_analog
 from sigma_moe.modeling_sigma_moe import SigmaMoELayer
 
-IS_CUDA = torch.cuda.is_available()
-
 
 def compute_perplexity(model: SigmaMoEForCausalLM, dataloader: DataLoader):
     """
     Compute batched perplexity.
     """
+    assert torch.cuda.is_available(), "This function should be run on a GPU" 
+    model.cuda()
+    model = model.eval()
     total_loss = 0
     total_non_empty = 0
     for inputs in tqdm(dataloader):
         input_ids = inputs["input_ids"]
-        input_ids = input_ids.to("cuda" if IS_CUDA else "cpu")
+        input_ids = input_ids.to("cuda")
         labels = inputs["labels"]
         labels = labels[:, 1:].contiguous()
-        labels = labels.to("cuda" if IS_CUDA else "cpu")
+        labels = labels.to("cuda")
         with torch.no_grad():
             outputs = model(input_ids=input_ids)
             non_empty_indices = ~(labels == -100).all(1)
@@ -42,38 +43,7 @@ def compute_perplexity(model: SigmaMoEForCausalLM, dataloader: DataLoader):
 
 if __name__ == "__main__":
     # first, run `huggingface-cli login` and supply a token that has the correct access rights.
-
-    # # We load a pre-trained model and convert it to analog
-    # output_dir = "/dccstor/broccoli/huggingface/transformers/sigma_moe/wikitext/moe/hw_learned_ir/"
-    # model_sd = torch.load(os.path.join(output_dir, "pytorch_model.bin"))
-    # for key in model_sd:
-    #     if "analog_tile_state" in key:
-    #         rpu_config = model_sd[key]["rpu_config"]
-
-    # model = SigmaMoEForCausalLM.from_pretrained("ibm-aimc/sigma-moe-small")
-    # model = convert_to_analog(
-    #     model,
-    #     rpu_config=rpu_config,
-    #     conversion_map={
-    #         torch.nn.Linear: AnalogLinear,
-    #         SigmaMoELayer: AnalogSigmaMoELayer,
-    #     },
-    # )
-
-    # # We push this model to the hub
-    # save_analog_model(model, name="ibm-aimc/analog-sigma-moe-small")
-
-    # we load it from the hub
-    model = load_analog_model(
-        name="ibm-aimc/analog-sigma-moe-small",
-        fp_model_cls=SigmaMoEForCausalLM,
-        config_cls=SigmaMoEConfiguration,
-        conversion_map={
-            torch.nn.Linear: AnalogLinear,
-            SigmaMoELayer: AnalogSigmaMoELayer,
-        },
-    )
-
+    
     # load the dataset. Important: This is already tokenized!
     dataset = datasets.load_dataset("ibm-aimc/sentencepiece-wikitext-103")
 
@@ -88,6 +58,40 @@ if __name__ == "__main__":
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
+    # We load a pre-trained model and convert it to analog
+    output_dir = "/dccstor/broccoli/huggingface/transformers/sigma_moe/wikitext/moe/hw_learned_ir/"
+    model_sd = torch.load(os.path.join(output_dir, "pytorch_model.bin"))
+    for key in model_sd:
+        if "analog_tile_state" in key:
+            rpu_config = model_sd[key]["rpu_config"]
+
+    model = SigmaMoEForCausalLM.from_pretrained("ibm-aimc/sigma-moe-small")
+    print(f"Perplexity is {compute_perplexity(model, dataloader):.2f}")
+
+    model = convert_to_analog(
+        model,
+        rpu_config=rpu_config,
+        conversion_map={
+            torch.nn.Linear: AnalogLinear,
+            SigmaMoELayer: AnalogSigmaMoELayer,
+        },
+    )
+    model.load_state_dict(model_sd)
+    print(f"Perplexity is {compute_perplexity(model, dataloader):.2f}")
+
+    # We push this model to the hub
+    save_analog_model(model, name="ibm-aimc/analog-sigma-moe-small")
+
+    # we load it from the hub
+    model = load_analog_model(
+        name="ibm-aimc/analog-sigma-moe-small",
+        fp_model_cls=SigmaMoEForCausalLM,
+        config_cls=SigmaMoEConfiguration,
+        conversion_map={
+            torch.nn.Linear: AnalogLinear,
+            SigmaMoELayer: AnalogSigmaMoELayer,
+        },
+    )
+
     # compute perplexity
-    ppl = compute_perplexity(model, dataloader)
-    print(f"Perplexity is {ppl:.2f}")
+    print(f"Perplexity is {compute_perplexity(model, dataloader):.2f}")

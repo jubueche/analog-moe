@@ -5,9 +5,10 @@ You need to have a GPU which is at least Volta (V100, A100, H100) since this pac
 You can create a clean environment using the following
 ```
 conda create -n torch-nightly python=3.10 -y
+conda activate torch-nightly
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch-nightly -c nvidia
 conda install -c conda-forge aihwkit-gpu -y
-pip install triton
+pip install triton transformers datasets
 ```
 Now, you should be able to call `python test_moe_layer.py` and the script should exit without any errors.
 
