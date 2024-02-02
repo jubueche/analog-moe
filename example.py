@@ -1,13 +1,11 @@
 import torch
-import os
 import datasets
 from transformers import DataCollatorForLanguageModeling, AutoTokenizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sigma_moe import SigmaMoEForCausalLM, SigmaMoEConfiguration
-from analog_moe import AnalogSigmaMoELayer, load_analog_model, save_analog_model
+from analog_moe import AnalogSigmaMoELayer, load_analog_model
 from aihwkit.nn.modules.linear import AnalogLinear
-from aihwkit.nn.conversion import convert_to_analog
 from sigma_moe.modeling_sigma_moe import SigmaMoELayer
 
 
@@ -57,30 +55,6 @@ if __name__ == "__main__":
         shuffle=False,
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
-
-    # We load a pre-trained model and convert it to analog
-    output_dir = "/dccstor/broccoli/huggingface/transformers/sigma_moe/wikitext/moe/hw_learned_ir/"
-    model_sd = torch.load(os.path.join(output_dir, "pytorch_model.bin"))
-    for key in model_sd:
-        if "analog_tile_state" in key:
-            rpu_config = model_sd[key]["rpu_config"]
-
-    model = SigmaMoEForCausalLM.from_pretrained("ibm-aimc/sigma-moe-small")
-    print(f"Perplexity is {compute_perplexity(model, dataloader):.2f}")
-
-    model = convert_to_analog(
-        model,
-        rpu_config=rpu_config,
-        conversion_map={
-            torch.nn.Linear: AnalogLinear,
-            SigmaMoELayer: AnalogSigmaMoELayer,
-        },
-    )
-    model.load_state_dict(model_sd)
-    print(f"Perplexity is {compute_perplexity(model, dataloader):.2f}")
-
-    # We push this model to the hub
-    save_analog_model(model, name="ibm-aimc/analog-sigma-moe-small")
 
     # we load it from the hub
     model = load_analog_model(
