@@ -490,11 +490,3 @@ def test_to_cuda():
         },
     )
     model = model.to(torch.device("cuda"))
-
-
-# if __name__ == "__main__":
-#     test_analog_vs_normal_IR_gradient(use_abs_max=False)
-#     test_out_noise(weight_remap_columnwise=False)
-#     test_analog_optim(do_clip=True)
-#     test_load_and_state_dict()
-#     test_to_cuda()
