@@ -157,10 +157,11 @@ def cvmm_kernel(
                 a = a / inp_res
 
                 # rounding that mirrors rounding beahaviour of torch.round
-                a_rounded = tl.math.round(a)
-                mask_point_five = tl.abs(tl.abs(a - a_rounded) - 0.5) < 1e-4
-                a = tl.where(mask_point_five & (a_rounded % 2 == 1) & (a_rounded > 0), a_rounded - 1, a_rounded)
-                a = tl.where(mask_point_five & (a_rounded % 2 == 1) & (a_rounded < 0), a_rounded + 1, a)
+                a = tl.extra.cuda.libdevice.rint(a)
+                # a_rounded = tl.math.round(a)
+                # mask_point_five = tl.abs(tl.abs(a - a_rounded) - 0.5) < 1e-4
+                # a = tl.where(mask_point_five & (a_rounded % 2 == 1) & (a_rounded > 0), a_rounded - 1, a_rounded)
+                # a = tl.where(mask_point_five & (a_rounded % 2 == 1) & (a_rounded < 0), a_rounded + 1, a)
 
                 a = a * inp_res
 
